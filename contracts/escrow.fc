@@ -7,19 +7,17 @@ slice addr_none() asm "<b b{00} s, b> <s PUSHSLICE";
 const hundred_percent = 100000000000;
 
 ;;
-;;  Storage
+;; Storage scheme
 ;;
-;;  (VarUInteger 16) price
-;;  MsgAddressInt jetton_master
-;;  ^Cell jetton_wallet_code
-;;  uint16 royalty_numerator
-;;  uint16 royalty_denominator
-;;  uint1 is_completed
-;;  ^Cell addresses
-;;      MsgAddressInt seller
-;;      MsgAddressInt buyer
-;;      MsgAddressInt guarantor
-;;
+;; addresses#_ seller:MsgAddress buyer:MsgAddress guarantor:MsgAddress = Addresses;
+;; storage#_ price:Coins
+;;           jetton_master:MsgAddress
+;;           jetton_wallet_code:^Cell
+;;           royalty_numerator:uint16
+;;           royalty_denominator:uint16
+;;           is_completed:uint1
+;;           addresses:^Addresses
+;;           = Storage;
 
 (int, slice, cell, int, int, int, slice, slice, slice) load_data() inline {
     slice ds = get_data().begin_parse();
@@ -74,9 +72,8 @@ const hundred_percent = 100000000000;
     int op = in_msg_body~load_uint(32);
     int query_id = in_msg_body~load_uint(64);
 
-    ;; 
-    ;; approve
-    ;; uint64 query_id
+    ;;
+    ;; approve#0x845dda8c query_id:uint64 = Approve;
     ;;
     if (op == op::approve) {
         if (equal_slices_bits(jetton_master, addr_none())) {
@@ -109,9 +106,8 @@ const hundred_percent = 100000000000;
         return();
     }
 
-    ;; 
-    ;; refund
-    ;; uint64 query_id
+    ;;
+    ;; refund#0x5b2c1458 query_id:uint64 = Refund;
     ;;
     if (op == op::refund) {
         if (equal_slices_bits(jetton_master, addr_none())) {
@@ -144,9 +140,8 @@ const hundred_percent = 100000000000;
         return();
     }
 
-    ;; 
-    ;; collect_royalties
-    ;; uint64 query_id
+    ;;
+    ;; collect_royalties#0xf6f53c87 query_id:uint64 = CollectRoyalties;
     ;;
     if (op == op::collect_royalties) {
         ;; Only royalties from completed deal could be collected.
