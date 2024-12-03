@@ -1,0 +1,205 @@
+#include "imports/stdlib.fc";
+#include "./op.fc";
+#include "./jetton-utils.fc";
+
+slice addr_none() asm "<b b{00} s, b> <s PUSHSLICE";
+
+const hundred_percent = 100000000000;
+
+;;
+;;  Storage
+;;
+;;  (VarUInteger 16) price
+;;  MsgAddressInt jetton_master
+;;  ^Cell jetton_wallet_code
+;;  uint16 royalty_numerator
+;;  uint16 royalty_denominator
+;;  uint1 is_completed
+;;  ^Cell addresses
+;;      MsgAddressInt seller
+;;      MsgAddressInt buyer
+;;      MsgAddressInt guarantor
+;;
+
+(int, slice, cell, int, int, int, slice, slice, slice) load_data() inline {
+    slice ds = get_data().begin_parse();
+    cell jetton_wallet_code = ds~load_ref();
+    slice ds_addresses = ds~load_ref().begin_parse();
+    slice seller = ds_addresses~load_msg_addr();
+    slice buyer = ds_addresses~load_msg_addr();
+    slice guarantor = ds_addresses~load_msg_addr();
+    return (ds~load_coins(), ds~load_msg_addr(), jetton_wallet_code, ds~load_uint(16), ds~load_uint(16), ds~load_uint(1), seller, buyer, guarantor);
+}
+
+() store_data(int price, slice jetton_master, cell jetton_wallet_code, int royalty_numerator, int royalty_denominator, int is_completed, slice seller, slice buyer, slice guarantor) impure {
+    set_data(begin_cell()
+                .store_coins(price)
+                .store_slice(jetton_master)
+                .store_ref(jetton_wallet_code)
+                .store_uint(royalty_numerator, 16)
+                .store_uint(royalty_denominator, 16)
+                .store_uint(is_completed, 1)
+                .store_ref(begin_cell()
+                    .store_slice(seller)
+                    .store_slice(buyer)
+                    .store_slice(guarantor)
+                .end_cell())
+        .end_cell()
+    );
+}
+
+(int) calculate_royalty_fee(int price, int royalty_numerator, int royalty_denominator) inline {
+    return muldiv(price, muldiv(royalty_numerator, hundred_percent, royalty_denominator), hundred_percent);
+}
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    ;; Ignore empty messages.
+    if (in_msg_body.slice_empty?()) {
+        return ();
+    }
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+
+    ;; Ignore all bounced messages.
+    if (flags & 1) {
+        return ();
+    }
+    slice sender_address = cs~load_msg_addr();
+
+    (int price, slice jetton_master, cell jetton_wallet_code, int royalty_numerator, int royalty_denominator, int is_completed, slice seller, slice buyer, slice guarantor) = load_data();
+
+    ;; Only messages from guarantor are accepted.
+    throw_unless(501, equal_slices_bits(sender_address, guarantor));
+
+    int op = in_msg_body~load_uint(32);
+    int query_id = in_msg_body~load_uint(64);
+
+    ;; 
+    ;; approve
+    ;; uint64 query_id
+    ;;
+    if (op == op::approve) {
+        if (equal_slices_bits(jetton_master, addr_none())) {
+            ;; Send TON to Seller.
+            builder msg = begin_cell()
+            ;; No bouncable messages.
+                .store_uint(0x10, 6)
+                .store_slice(seller)
+                .store_coins(price)
+                .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1);
+
+            ;; Pays transfer fees separetely.
+            send_raw_message(msg.end_cell(), 1);
+        } else {
+            ;; Send Tokens to Seller.
+            cell msg_body = create_jetton_transfer_body(query_id, price, seller);
+            builder msg = begin_cell()
+                .store_uint(0x18, 6)
+                .store_slice(calculate_user_jetton_wallet_address(my_address(), jetton_master, jetton_wallet_code))
+                .store_coins(0)
+                .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+                .store_ref(msg_body);
+            
+            ;; Send all the remaining value.
+            send_raw_message(msg.end_cell(), 64);
+        }
+
+        ;; Store non-zero flag means that deal is completed
+        store_data(price, jetton_master, jetton_wallet_code, royalty_numerator, royalty_denominator, 1, seller, buyer, guarantor);
+        return();
+    }
+
+    ;; 
+    ;; refund
+    ;; uint64 query_id
+    ;;
+    if (op == op::refund) {
+        if (equal_slices_bits(jetton_master, addr_none())) {
+            ;; Send TON back to Buyer.
+            builder msg = begin_cell()
+            ;; No bouncable messages.
+                .store_uint(0x10, 6)
+                .store_slice(buyer)
+                .store_coins(price)
+                .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1);
+
+            ;; Pays transfer fees separetely.
+            send_raw_message(msg.end_cell(), 1);
+        } else {
+            ;; Send Tokens back to Buyer.
+            cell msg_body = create_jetton_transfer_body(query_id, price, buyer);
+            builder msg = begin_cell()
+                .store_uint(0x18, 6)
+                .store_slice(calculate_user_jetton_wallet_address(my_address(), jetton_master, jetton_wallet_code))
+                .store_coins(0)
+                .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+                .store_ref(msg_body);
+            
+            ;; Send all the remaining value.
+            send_raw_message(msg.end_cell(), 64);
+        }
+
+        ;; Store non-zero flag means that deal is completed
+        store_data(price, jetton_master, jetton_wallet_code, royalty_numerator, royalty_denominator, 1, seller, buyer, guarantor);
+        return();
+    }
+
+    ;; 
+    ;; collect_royalties
+    ;; uint64 query_id
+    ;;
+    if (op == op::collect_royalties) {
+        ;; Only royalties from completed deal could be collected.
+        throw_unless(502, is_completed > 0);
+        if (equal_slices_bits(jetton_master, addr_none())) {
+            ;; Send TON to Guarantor.
+            builder msg = begin_cell()
+            ;; No bouncable messages.
+                .store_uint(0x10, 6)
+                .store_slice(guarantor)
+                .store_coins(0)
+                .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1);
+
+            ;; Send all the remaining balance and destroy.
+            send_raw_message(msg.end_cell(), 128 | 32);
+            return();
+        } else {
+            ;; Send Tokens to Guarantor.
+            cell msg_body = create_jetton_transfer_body(query_id, calculate_royalty_fee(price, royalty_numerator, royalty_denominator), guarantor);
+            builder msg = begin_cell()
+                .store_uint(0x18, 6)
+                .store_slice(calculate_user_jetton_wallet_address(my_address(), jetton_master, jetton_wallet_code))
+                .store_coins(0)
+                .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+                .store_ref(msg_body);
+            
+            ;; Send all the remaining balance and destroy.
+            send_raw_message(msg.end_cell(), 128 | 32);
+            return();
+        }
+    }
+
+    throw(0xffff);
+}
+
+;; Get methods
+
+(int) get_full_price () method_id {
+    (int price, slice jetton_master, cell jetton_wallet_code, int royalty_numerator, int royalty_denominator, int is_completed, slice seller, slice buyer, slice guarantor) = load_data();
+    return price + calculate_royalty_fee(price, royalty_numerator, royalty_denominator);
+}
+
+(int) get_price () method_id {
+    (int price, slice jetton_master, cell jetton_wallet_code, int royalty_numerator, int royalty_denominator, int is_completed, slice seller, slice buyer, slice guarantor) = load_data();
+    return price;
+}
+
+(slice) get_jetton_master () method_id {
+    (int price, slice jetton_master, cell jetton_wallet_code, int royalty_numerator, int royalty_denominator, int is_completed, slice seller, slice buyer, slice guarantor) = load_data();
+    return jetton_master;
+}
+
+(int) get_is_completed () method_id {
+    (int price, slice jetton_master, cell jetton_wallet_code, int royalty_numerator, int royalty_denominator, int is_completed, slice seller, slice buyer, slice guarantor) = load_data();
+    return is_completed;
+}

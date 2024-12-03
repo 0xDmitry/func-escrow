@@ -1,0 +1,3 @@
+const op::approve = "approve"c;
+const op::refund = "refund"c;
+const op::collect_royalties = "collect_royalties"c;
