@@ -89,7 +89,7 @@ const hundred_percent = 100000000000;
             send_raw_message(msg.end_cell(), 1);
         } else {
             ;; Send Tokens to Seller.
-            cell msg_body = create_jetton_transfer_body(query_id, price, seller);
+            cell msg_body = create_jetton_transfer_body(query_id, price, seller, my_address());
             builder msg = begin_cell()
                 .store_uint(0x18, 6)
                 .store_slice(calculate_user_jetton_wallet_address(my_address(), jetton_master, jetton_wallet_code))
@@ -123,7 +123,7 @@ const hundred_percent = 100000000000;
             send_raw_message(msg.end_cell(), 1);
         } else {
             ;; Send Tokens back to Buyer.
-            cell msg_body = create_jetton_transfer_body(query_id, price, buyer);
+            cell msg_body = create_jetton_transfer_body(query_id, price, buyer, my_address());
             builder msg = begin_cell()
                 .store_uint(0x18, 6)
                 .store_slice(calculate_user_jetton_wallet_address(my_address(), jetton_master, jetton_wallet_code))
@@ -160,7 +160,7 @@ const hundred_percent = 100000000000;
             return();
         } else {
             ;; Send Tokens to Guarantor.
-            cell msg_body = create_jetton_transfer_body(query_id, calculate_royalty_fee(price, royalty_numerator, royalty_denominator), guarantor);
+            cell msg_body = create_jetton_transfer_body(query_id, calculate_royalty_fee(price, royalty_numerator, royalty_denominator), guarantor, guarantor);
             builder msg = begin_cell()
                 .store_uint(0x18, 6)
                 .store_slice(calculate_user_jetton_wallet_address(my_address(), jetton_master, jetton_wallet_code))
